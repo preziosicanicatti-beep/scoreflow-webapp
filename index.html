@@ -93,6 +93,14 @@
             padding: 40px;
             opacity: 0.7;
         }
+        
+        .error {
+            background: rgba(231, 76, 60, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -118,7 +126,7 @@
     
     <div id="today" class="tab-content">
         <div id="todayMatches" class="loading">
-            <p>Caricamento fixture...</p>
+            <p>Caricamento partite di oggi...</p>
         </div>
     </div>
     
@@ -128,11 +136,11 @@
              data-host="v3.football.api-sports.io"
              data-key="a774f2ffd8a40938852ca7ac679ebad3"
              data-date=""
-             data-league=""
-             data-season=""
+             data-league="39"
+             data-season="2024"
              data-theme=""
              data-refresh="15"
-             data-show-errors="false"
+             data-show-errors="true"
              data-show-logos="true"
              class="api_football_loader">
         </div>
@@ -156,13 +164,13 @@
         <div class="match-card">
             <p style="margin-bottom: 10px; font-weight: 600;">🏆 Campionati</p>
             <label style="display: block; padding: 10px 0;">
-                <input type="checkbox" value="39"> Premier League
+                <input type="checkbox" value="39" checked> Premier League
             </label>
             <label style="display: block; padding: 10px 0;">
-                <input type="checkbox" value="140"> La Liga
+                <input type="checkbox" value="140" checked> La Liga
             </label>
             <label style="display: block; padding: 10px 0;">
-                <input type="checkbox" value="135"> Serie A
+                <input type="checkbox" value="135" checked> Serie A
             </label>
         </div>
         
@@ -175,11 +183,57 @@ const tg = window.Telegram.WebApp;
 tg.expand();
 tg.ready();
 
+// API Configuration
+const API_KEYS = [
+    'a774f2ffd8a40938852ca7ac679ebad3',
+    '11e24e4c5198f2398c61f033cabdd9da',
+    '6677dbb5c7f77c1268f363d22bea776e'
+];
+let currentKeyIndex = 0;
+
 let cache = {
     live: { data: null, timestamp: 0 },
     today: { data: null, timestamp: 0 }
 };
-const CACHE_DURATION = 60000;
+const CACHE_DURATION = 60000; // 60 secondi
+
+function getApiKey() {
+    return API_KEYS[currentKeyIndex];
+}
+
+function rotateApiKey() {
+    currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+    console.log(`Rotated to API key ${currentKeyIndex + 1}`);
+}
+
+async function apiCall(endpoint, params = {}) {
+    const key = getApiKey();
+    const url = new URL(`https://v3.football.api-sports.io/${endpoint}`);
+    Object.keys(params).forEach(k => url.searchParams.append(k, params[k]));
+    
+    try {
+        const response = await fetch(url, {
+            headers: {
+                'x-apisports-key': key
+            }
+        });
+        
+        if (response.status === 429) {
+            rotateApiKey();
+            throw new Error('Rate limit exceeded, rotated API key');
+        }
+        
+        if (!response.ok) {
+            throw new Error(`API Error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        return data.response || [];
+    } catch (error) {
+        console.error('API Error:', error);
+        return null;
+    }
+}
 
 function showTab(tabName) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -198,38 +252,84 @@ async function loadLiveMatches() {
         return;
     }
     
-    tg.sendData(JSON.stringify({ action: 'get_live' }));
+    document.getElementById('liveMatches').innerHTML = '<div class="loading"><p>⚽ Caricamento...</p></div>';
     
-    const demoData = [
-        {
-            league: { name: 'Serie A' },
-            teams: { home: { name: 'Inter' }, away: { name: 'Juventus' } },
-            goals: { home: 2, away: 1 },
-            fixture: { status: { short: '2H', elapsed: 67 } }
-        }
-    ];
-    cache.live = { data: demoData, timestamp: now };
-    renderMatches(demoData, 'liveMatches');
+    const matches = await apiCall('fixtures', { live: 'all' });
+    
+    if (!matches) {
+        document.getElementById('liveMatches').innerHTML = '<div class="error"><p>❌ Errore nel caricamento</p></div>';
+        return;
+    }
+    
+    cache.live = { data: matches, timestamp: now };
+    renderMatches(matches, 'liveMatches');
+}
+
+async function loadTodayMatches() {
+    const now = Date.now();
+    if (cache.today.data && (now - cache.today.timestamp) < CACHE_DURATION) {
+        renderMatches(cache.today.data, 'todayMatches');
+        return;
+    }
+    
+    document.getElementById('todayMatches').innerHTML = '<div class="loading"><p>📅 Caricamento...</p></div>';
+    
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const matches = await apiCall('fixtures', { 
+        date: today,
+        timezone: 'Europe/Rome'
+    });
+    
+    if (!matches) {
+        document.getElementById('todayMatches').innerHTML = '<div class="error"><p>❌ Errore nel caricamento</p></div>';
+        return;
+    }
+    
+    cache.today = { data: matches, timestamp: now };
+    renderMatches(matches, 'todayMatches');
 }
 
 function renderMatches(matches, containerId) {
     const container = document.getElementById(containerId);
+    
     if (!matches || matches.length === 0) {
-        container.innerHTML = '<div class="loading"><p>⚽ Nessuna partita in corso</p></div>';
+        container.innerHTML = '<div class="loading"><p>⚽ Nessuna partita trovata</p></div>';
         return;
     }
     
-    container.innerHTML = matches.map(m => `
+    // Applica filtri
+    const settings = loadSettings();
+    let filtered = matches;
+    
+    if (settings.minGoals > 0) {
+        filtered = filtered.filter(m => {
+            const total = (m.goals.home || 0) + (m.goals.away || 0);
+            return total >= settings.minGoals;
+        });
+    }
+    
+    if (settings.leagues.length > 0) {
+        filtered = filtered.filter(m => 
+            settings.leagues.includes(m.league.id.toString())
+        );
+    }
+    
+    if (filtered.length === 0) {
+        container.innerHTML = '<div class="loading"><p>🔍 Nessuna partita con i filtri selezionati</p></div>';
+        return;
+    }
+    
+    container.innerHTML = filtered.map(m => `
         <div class="match-card">
             <div class="match-header">
-                <span>${m.league.name}</span>
+                <span>${m.league.name} - ${m.league.country}</span>
                 <span>${m.fixture.status.short} ${m.fixture.status.elapsed || ''}'</span>
             </div>
             <div class="match-teams">
                 <div class="team">
                     <div class="team-name">${m.teams.home.name}</div>
                 </div>
-                <div class="score">${m.goals.home} - ${m.goals.away}</div>
+                <div class="score">${m.goals.home || 0} - ${m.goals.away || 0}</div>
                 <div class="team">
                     <div class="team-name">${m.teams.away.name}</div>
                 </div>
@@ -238,24 +338,58 @@ function renderMatches(matches, containerId) {
     `).join('');
 }
 
-function loadTodayMatches() {
-    document.getElementById('todayMatches').innerHTML = '<div class="loading"><p>📅 Caricamento...</p></div>';
+function loadSettings() {
+    try {
+        const saved = localStorage.getItem('scoreflow_settings');
+        if (saved) {
+            return JSON.parse(saved);
+        }
+    } catch (e) {
+        console.error('Error loading settings:', e);
+    }
+    
+    return {
+        minGoals: 0,
+        leagues: []
+    };
 }
 
 function saveSettings() {
     const settings = {
-        minGoals: document.getElementById('minGoals').value,
+        minGoals: parseInt(document.getElementById('minGoals').value),
         leagues: Array.from(document.querySelectorAll('#settings input:checked')).map(i => i.value)
     };
-    tg.sendData(JSON.stringify({ action: 'save_settings', data: settings }));
+    
+    localStorage.setItem('scoreflow_settings', JSON.stringify(settings));
+    
+    // Invia anche al bot se possibile
+    try {
+        tg.sendData(JSON.stringify({ action: 'save_settings', data: settings }));
+    } catch (e) {
+        console.log('Cannot send to bot:', e);
+    }
+    
     tg.showAlert('✅ Salvato!');
 }
 
+// Carica impostazioni all'avvio
+window.addEventListener('DOMContentLoaded', () => {
+    const settings = loadSettings();
+    document.getElementById('minGoals').value = settings.minGoals;
+    document.querySelectorAll('#settings input[type="checkbox"]').forEach(cb => {
+        cb.checked = settings.leagues.includes(cb.value);
+    });
+});
+
+// Auto-refresh ogni 30 secondi per tab Live
 setInterval(() => {
     const activeTab = document.querySelector('.tab-content.active').id;
-    if (activeTab === 'live') loadLiveMatches();
+    if (activeTab === 'live') {
+        loadLiveMatches();
+    }
 }, 30000);
 
+// Carica al primo avvio
 loadLiveMatches();
 </script>
 
