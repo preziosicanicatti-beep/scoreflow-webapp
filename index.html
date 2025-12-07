@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScoreFlow Live</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: var(--tg-theme-bg-color, #17212b);
+            color: var(--tg-theme-text-color, #fff);
+            padding: 0;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .header h1 { font-size: 24px; margin-bottom: 5px; }
+        
+        .tabs {
+            display: flex;
+            background: #232e3c;
+            border-bottom: 2px solid rgba(255,255,255,0.1);
+        }
+        .tab {
+            flex: 1;
+            padding: 15px 10px;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            color: #aaa;
+            font-size: 15px;
+            transition: all 0.3s;
+        }
+        .tab.active {
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .content { padding: 15px; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        .match-card {
+            background: #232e3c;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        .match-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 12px;
+            opacity: 0.7;
+        }
+        .match-teams {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            margin: 15px 0;
+        }
+        .team { flex: 1; text-align: center; }
+        .team-name { font-size: 14px; font-weight: 500; }
+        .score {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+            padding: 0 15px;
+        }
+        
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>⚽ ScoreFlow Live</h1>
+    <p>Partite in tempo reale</p>
+</div>
+
+<div class="tabs">
+    <button class="tab active" onclick="showTab('live')">🔴 Live</button>
+    <button class="tab" onclick="showTab('today')">📅 Oggi</button>
+    <button class="tab" onclick="showTab('widget')">📊 Widget</button>
+    <button class="tab" onclick="showTab('settings')">⚙️ Filtri</button>
+</div>
+
+<div class="content">
+    <div id="live" class="tab-content active">
+        <div id="liveMatches" class="loading">
+            <p>Caricamento partite live...</p>
+        </div>
+    </div>
+    
+    <div id="today" class="tab-content">
+        <div id="todayMatches" class="loading">
+            <p>Caricamento fixture...</p>
+        </div>
+    </div>
+    
+    <div id="widget" class="tab-content">
+        <h3 style="margin-bottom: 15px;">Widget Livescore</h3>
+        <div id="wg-api-football-game"
+             data-host="v3.football.api-sports.io"
+             data-key="a774f2ffd8a40938852ca7ac679ebad3"
+             data-date=""
+             data-league=""
+             data-season=""
+             data-theme=""
+             data-refresh="15"
+             data-show-errors="false"
+             data-show-logos="true"
+             class="api_football_loader">
+        </div>
+        <script type="module" src="https://widgets.api-sports.io/2.0.3/widgets.js"></script>
+    </div>
+    
+    <div id="settings" class="tab-content">
+        <h3 style="margin-bottom: 15px;">Impostazioni Notifiche</h3>
+        
+        <div class="match-card">
+            <p style="margin-bottom: 10px; font-weight: 600;">🎯 Gol minimi</p>
+            <select id="minGoals" class="btn" style="padding: 12px;">
+                <option value="0">Tutte le partite</option>
+                <option value="1">1+ gol</option>
+                <option value="2">2+ gol</option>
+                <option value="3">3+ gol</option>
+                <option value="4">4+ gol</option>
+            </select>
+        </div>
+        
+        <div class="match-card">
+            <p style="margin-bottom: 10px; font-weight: 600;">🏆 Campionati</p>
+            <label style="display: block; padding: 10px 0;">
+                <input type="checkbox" value="39"> Premier League
+            </label>
+            <label style="display: block; padding: 10px 0;">
+                <input type="checkbox" value="140"> La Liga
+            </label>
+            <label style="display: block; padding: 10px 0;">
+                <input type="checkbox" value="135"> Serie A
+            </label>
+        </div>
+        
+        <button class="btn" onclick="saveSettings()">💾 Salva Preferenze</button>
+    </div>
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.expand();
+tg.ready();
+
+let cache = {
+    live: { data: null, timestamp: 0 },
+    today: { data: null, timestamp: 0 }
+};
+const CACHE_DURATION = 60000;
+
+function showTab(tabName) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById(tabName).classList.add('active');
+    
+    if (tabName === 'live') loadLiveMatches();
+    if (tabName === 'today') loadTodayMatches();
+}
+
+async function loadLiveMatches() {
+    const now = Date.now();
+    if (cache.live.data && (now - cache.live.timestamp) < CACHE_DURATION) {
+        renderMatches(cache.live.data, 'liveMatches');
+        return;
+    }
+    
+    tg.sendData(JSON.stringify({ action: 'get_live' }));
+    
+    const demoData = [
+        {
+            league: { name: 'Serie A' },
+            teams: { home: { name: 'Inter' }, away: { name: 'Juventus' } },
+            goals: { home: 2, away: 1 },
+            fixture: { status: { short: '2H', elapsed: 67 } }
+        }
+    ];
+    cache.live = { data: demoData, timestamp: now };
+    renderMatches(demoData, 'liveMatches');
+}
+
+function renderMatches(matches, containerId) {
+    const container = document.getElementById(containerId);
+    if (!matches || matches.length === 0) {
+        container.innerHTML = '<div class="loading"><p>⚽ Nessuna partita in corso</p></div>';
+        return;
+    }
+    
+    container.innerHTML = matches.map(m => `
+        <div class="match-card">
+            <div class="match-header">
+                <span>${m.league.name}</span>
+                <span>${m.fixture.status.short} ${m.fixture.status.elapsed || ''}'</span>
+            </div>
+            <div class="match-teams">
+                <div class="team">
+                    <div class="team-name">${m.teams.home.name}</div>
+                </div>
+                <div class="score">${m.goals.home} - ${m.goals.away}</div>
+                <div class="team">
+                    <div class="team-name">${m.teams.away.name}</div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function loadTodayMatches() {
+    document.getElementById('todayMatches').innerHTML = '<div class="loading"><p>📅 Caricamento...</p></div>';
+}
+
+function saveSettings() {
+    const settings = {
+        minGoals: document.getElementById('minGoals').value,
+        leagues: Array.from(document.querySelectorAll('#settings input:checked')).map(i => i.value)
+    };
+    tg.sendData(JSON.stringify({ action: 'save_settings', data: settings }));
+    tg.showAlert('✅ Salvato!');
+}
+
+setInterval(() => {
+    const activeTab = document.querySelector('.tab-content.active').id;
+    if (activeTab === 'live') loadLiveMatches();
+}, 30000);
+
+loadLiveMatches();
+</script>
+
+</body>
+</html>
